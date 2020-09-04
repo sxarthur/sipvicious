@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SIPvicious password cracker - svcrack
 
 __GPL__ = """
@@ -64,8 +63,7 @@ class ASipOfRedWine:
         self.method = method
         if self.sessionpath is not None:
             self.resultpasswd = dbm.open(
-                os.path.join(self.sessionpath, 'resultpasswd'), 'c'
-            )
+                os.path.join(self.sessionpath, 'resultpasswd'), 'c')
             try:
                 self.resultpasswd.sync()
                 self.dbsyncs = True
@@ -83,7 +81,12 @@ class ASipOfRedWine:
         self.challenges = list()
         self.crackmode = crackmode
         self.crackargs = crackargs
-        self.dsthost, self.dstport = host, int(port)
+        try:
+            if int(port) > 1 and int(port) <= 65535:
+                self.dsthost, self.dstport = host, int(port)
+        except (ValueError, TypeError):
+            self.log.error('port should strictly be an integer between 1 and 65535')
+            exit(1)
         self.domain = self.dsthost
         if domain:
             self.domain = domain
@@ -180,13 +183,16 @@ class ASipOfRedWine:
     def getResponse(self):
         # we got stuff to read off the socket
         buff, _ = self.sock.recvfrom(8192)
-        buff = buff.decode('utf-8')
+        buff = buff.decode('utf-8', 'ignore')
         if buff.startswith(self.PROXYAUTHREQ):
             self.dstisproxy = True
         elif buff.startswith(self.AUTHREQ):
             self.dstisproxy = False
         if buff.startswith(self.PROXYAUTHREQ) or buff.startswith(self.AUTHREQ):
             authheader = getAuthHeader(buff)
+            if authheader is None:
+                self.log.critical("no authentication header found in response, cannot proceed")
+                exit(1)
             nonce = getNonce(authheader)
             opaque = getOpaque(authheader)
             algorithm = getAlgorithm(authheader)
@@ -208,7 +214,7 @@ class ASipOfRedWine:
             if (_tmp is not None) and (len(_tmp) == 2):
                 crackeduser, crackedpasswd = _tmp
                 self.log.info("The password for %s is %s" %
-                              (crackeduser, crackedpasswd))
+                              (crackeduser.decode(), crackedpasswd.decode()))
                 self.resultpasswd[crackeduser] = crackedpasswd
                 if self.sessionpath is not None and self.dbsyncs:
                     self.resultpasswd.sync()
@@ -338,12 +344,12 @@ class ASipOfRedWine:
                             try:
                                 if self.crackmode == 1:
                                     pickle.dump(self.previouspassword, open(
-                                        os.path.join(self.sessionpath, 'lastpasswd.pkl'), 'w'))
+                                        os.path.join(self.sessionpath, 'lastpasswd.pkl'), 'wb+'))
                                     self.log.debug(
                                         'logged last extension %s' % self.previouspassword)
                                 elif self.crackmode == 2:
                                     pickle.dump(self.crackargs.tell(), open(
-                                        os.path.join(self.sessionpath, 'lastpasswd.pkl'), 'w'))
+                                        os.path.join(self.sessionpath, 'lastpasswd.pkl'), 'wb+'))
                                     self.log.debug(
                                         'logged last position %s' % self.crackargs.tell())
                             except IOError:
@@ -361,6 +367,8 @@ def main():
     usage += "%prog -u100 -r1-9999 -z4 10.0.0.1\r\n"
     parser = OptionParser(usage, version="%prog v" +
                           str(__version__) + __GPL__)
+    parser.add_option("-p", "--port", dest="port", default="5060",
+                      help="Destination port of the SIP device - eg -p 5060", metavar="PORT")
     parser = standardoptions(parser)
     parser = standardscanneroptions(parser)
     parser.add_option("-u", "--username", dest="username",
@@ -386,20 +394,18 @@ def main():
                       help="""A format string which allows us to specify a template for the extensions
                       example svwar.py -e 1-999 --template="123%#04i999" would scan between 1230001999 to 1230999999"
                       """)
-    parser.add_option('--maximumtime', action='store', dest='maximumtime', type="int",
-                      default=10,
-                      help="""Maximum time in seconds to keep sending requests without
-                      receiving a response back""")
+    parser.add_option('--maximumtime', action='store', dest='maximumtime', type="int", default=10,
+                      help="Maximum time in seconds to keep sending requests without receiving a response back")
     parser.add_option('--enabledefaults', '-D', action="store_true", dest="defaults",
                       default=False, help="""Scan for default / typical passwords such as
                       1000,2000,3000 ... 1100, etc. This option is off by default.
                       Use --enabledefaults to enable this functionality""")
     parser.add_option('--domain', dest="domain",
-                      help="force a specific domain name for the SIP message, eg. -d example.org")
+                      help="force a specific domain name for the SIP message, eg. example.org")
     parser.add_option('--requesturi', dest="requesturi",
                         help="force the first line URI to a specific value; e.g. sip:999@example.org")
-    parser.add_option('-6', dest="ipv6", action="store_true", help="scan an IPv6 address")
-    parser.add_option('-m','--method', dest='method', default='REGISTER')
+    parser.add_option('-6', dest="ipv6", action="store_true", help="Scan an IPv6 address")
+    parser.add_option('-m','--method', dest='method', default='REGISTER', help="Specify a SIP method to use")
     (options, args) = parser.parse_args()
     exportpath = None
     logging.basicConfig(level=calcloglevel(options))
@@ -417,7 +423,7 @@ def main():
         optionssrc = os.path.join(exportpath, 'options.pkl')
         previousresume = options.resume
         previousverbose = options.verbose
-        options, args = pickle.load(open(optionssrc, 'r'))
+        options, args = pickle.load(open(optionssrc, 'rb'), encoding='bytes')
         options.resume = previousresume
         options.verbose = previousverbose
     elif options.save is not None:
@@ -435,7 +441,7 @@ def main():
         optionssrc = os.path.join(exportpath, 'options.pkl')
         previousresume = options.resume
         previousverbose = options.verbose
-        options, args = pickle.load(open(optionssrc, 'r'))
+        options, args = pickle.load(open(optionssrc, 'rb'), encoding='bytes')
         options.resume = previousresume
         options.verbose = previousverbose
     elif options.save is not None:
@@ -452,12 +458,12 @@ def main():
     if options.dictionary is not None:
         crackmode = 2
         try:
-            dictionary = open(options.dictionary, 'r')
+            dictionary = open(options.dictionary, 'r', encoding='utf-8', errors='ignore')
         except IOError:
             logging.error("could not open %s" % options.dictionary)
         if options.resume is not None:
             lastpasswdsrc = os.path.join(exportpath, 'lastpasswd.pkl')
-            previousposition = pickle.load(open(lastpasswdsrc, 'r'))
+            previousposition = pickle.load(open(lastpasswdsrc, 'rb'), encoding='bytes')
             dictionary.seek(previousposition)
         crackargs = dictionary
     else:
@@ -465,7 +471,7 @@ def main():
         if options.resume is not None:
             lastpasswdsrc = os.path.join(exportpath, 'lastpasswd.pkl')
             try:
-                previouspasswd = pickle.load(open(lastpasswdsrc, 'r'))
+                previouspasswd = pickle.load(open(lastpasswdsrc, 'rb'), encoding='bytes')
             except IOError:
                 logging.critical('Could not read from %s' % lastpasswdsrc)
                 exit(1)
@@ -493,7 +499,7 @@ def main():
                 exit(1)
             optionsdst = os.path.join(exportpath, 'options.pkl')
             logging.debug('saving options to %s' % optionsdst)
-            pickle.dump([options, args], open(optionsdst, 'w'))
+            pickle.dump([options, args], open(optionsdst, 'wb+'))
     if options.autogetip:
         tmpsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tmpsocket.connect(("msn.com", 80))
@@ -543,12 +549,12 @@ def main():
         try:
             if crackmode == 1:
                 pickle.dump(sipvicious.previouspassword, open(
-                    os.path.join(exportpath, 'lastpasswd.pkl'), 'w'))
+                    os.path.join(exportpath, 'lastpasswd.pkl'), 'wb+'))
                 logging.debug('logged last password %s' %
                               sipvicious.previouspassword)
             elif crackmode == 2:
                 pickle.dump(sipvicious.crackargs.tell(), open(
-                    os.path.join(exportpath, 'lastpasswd.pkl'), 'w'))
+                    os.path.join(exportpath, 'lastpasswd.pkl'), 'wb+'))
                 logging.debug('logged last position %s' %
                               sipvicious.crackargs.tell())
         except IOError:
@@ -561,8 +567,12 @@ def main():
             if (lenres < 400 and options.save is not None) or options.save is None:
                 labels = ('Extension', 'Password')
                 rows = list()
-                for k in sipvicious.resultpasswd.keys():
-                    rows.append((k, sipvicious.resultpasswd[k]))
+                try:
+                    for k in sipvicious.resultpasswd.keys():
+                        rows.append((k.decode(), sipvicious.resultpasswd[k].decode()))
+                except AttributeError:
+                    for k in sipvicious.resultpasswd.keys():
+                        rows.append((k, sipvicious.resultpasswd[k]))
                 print(to_string(rows, header=labels))
             else:
                 logging.warn("too many to print - use svreport for this")

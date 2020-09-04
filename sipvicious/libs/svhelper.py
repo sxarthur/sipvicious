@@ -19,7 +19,7 @@
 
 
 __author__ = "Sandro Gauci <sandro@enablesecurity.com>"
-__version__ = '0.3.0'
+__version__ = '0.3.1'
 
 
 import re
@@ -39,12 +39,13 @@ from random import getrandbits
 from urllib.request import urlopen
 from urllib.error import URLError
 from urllib.parse import urlencode
-from binascii import b2a_hex, a2b_hex
+from binascii import Error as b2aerr
 from .pptable import to_string
+from binascii import b2a_hex, a2b_hex, hexlify
 
-if sys.hexversion < 0x03050000:
+if sys.hexversion < 0x03060000:
     sys.stderr.write(
-        "Please update to python 3.5 or greater to run Sipvicious\r\n")
+        "Please update to python 3.6 or greater to run SIPVicious\r\n")
     sys.exit(1)
 
 
@@ -53,13 +54,11 @@ def standardoptions(parser):
                       help="Increase verbosity")
     parser.add_option('-q', '--quiet', dest="quiet", action="store_true",
                       default=False, help="Quiet mode")
-    parser.add_option("-p", "--port", dest="port", default="5060",
-                      help="Destination port or port ranges of the SIP device - eg -p5060,5061,8000-8100", metavar="PORT")
     parser.add_option("-P", "--localport", dest="localport", default=5060, type="int",
                       help="Source port for our packets", metavar="PORT")
     parser.add_option("-x", "--externalip", dest="externalip",
                       help="IP Address to use as the external ip. Specify this if you have multiple interfaces or if you are behind NAT", metavar="IP")
-    parser.add_option("-b", "--bindingip", dest="bindingip", default='0.0.0.0',
+    parser.add_option("-b", "--bindingip", dest="bindingip", default='',
                       help="By default we bind to all interfaces. This option overrides that and binds to the specified ip address")
     parser.add_option("-t", "--timeout", dest="selecttime", type="float", default=0.005,
                       help="This option allows you to trottle the speed at which packets are sent. Change this if you're losing packets. For example try 0.5.",
@@ -404,7 +403,7 @@ def getTag(buff):
             _tmp2 = _tmp[0][1]
             try:
                 _tmp2 = a2b_hex(_tmp2.strip())
-            except TypeError:
+            except (TypeError, b2aerr):
                 return
             if _tmp2.find(b'\x01') > 0:
                 try:
@@ -454,24 +453,24 @@ def challengeResponse(auth, method, uri):
         nonceCount = "%08d" % auth["noncecount"]
         result += ',cnonce="%s",nc=%s' % (cnonce, nonceCount)
     if algorithm is None or algorithm == "md5":
-        ha1 = md5('%s:%s:%s' % (username, realm, passwd)).hexdigest()
+        ha1 = md5(('%s:%s:%s' % (username, realm, passwd)).encode('utf-8')).hexdigest()
         result += ',algorithm=MD5'
     elif auth["algorithm"] == "md5-sess":
-        ha1 = md5(md5('%s:%s:%s' % (username, realm, passwd)
-                      ).hexdigest() + ":" + nonce + ":" + cnonce).hexdigest()
+        ha1 = md5((md5(('%s:%s:%s' % (username, realm, passwd)).encode('utf-8')
+                      ).hexdigest() + ":" + nonce + ":" + cnonce).encode('utf-8')).hexdigest()
         result += ',algorithm=MD5-sess'
     else:
         print("Unknown algorithm: %s" % auth["algorithm"])
     if qop is None or qop == "auth":
-        ha2 = md5('%s:%s' % (method, uri)).hexdigest()
+        ha2 = md5(('%s:%s' % (method, uri)).encode('utf-8')).hexdigest()
         result += ',qop=auth'
     if qop == "auth-int":
         print("auth-int is not supported")
     if qop == "auth":
-        res = md5(ha1 + ":" + nonce + ":" + nonceCount + ":" +
-                  cnonce + ":" + qop + ":" + ha2).hexdigest()
+        res = md5((ha1 + ":" + nonce + ":" + nonceCount + ":" +
+                  cnonce + ":" + qop + ":" + ha2).encode('utf-8')).hexdigest()
     else:
-        res = md5('%s:%s:%s' % (ha1, nonce, ha2)).hexdigest()
+        res = md5(('%s:%s:%s' % (ha1, nonce, ha2)).encode('utf-8')).hexdigest()
     result += ',response="%s"' % res
     if opaque is not None and opaque != "":
         result += ',opaque="%s"' % opaque
@@ -587,9 +586,6 @@ def reportBugToAuthor(trace):
     data += '\r\n'
     data += "python version: \r\n"
     data += "%s\r\n" % sys.version
-    # data += """2.5 (r25:51918, Sep 19 2006, 08:49:13)
-    #data += "[GCC ]"
-    #data += "A"*900
     data += "osname: %s" % os.name
     data += '\r\n'
     if os.name == 'posix':
@@ -600,8 +596,8 @@ def reportBugToAuthor(trace):
     data += str(trace)
     try:
         urlopen('https://comms.enablesecurity.com/hello.php',
-                urlencode({'message': data}))
-        log.warn('Thanks for the bug report! I\'ll be working on it soon')
+                urlencode({'message': data}).encode('utf-8'))
+        log.warn('Thanks for the bug report! We will be working on it soon')
     except URLError as err:
         log.error(err)
     log.warn('Make sure you are running the latest version of SIPVicious \
@@ -633,6 +629,8 @@ def scanrandom(ipranges, portranges, methods, resume=None, randomstore='.sipvici
         pass
     ipsleft = 0
     for iprange in ipranges:
+        if iprange is None:
+            continue
         startip, endip = iprange
         ipsleft += endip - startip + 1
         hit = 0
@@ -688,6 +686,11 @@ def numToDottedQuad(n):
     return socket.inet_ntoa(struct.pack('!L', n))
 
 
+def colonHexToNum(ip):
+    "convert ipv6 address to long integer"
+    return int(hexlify(socket.inet_pton(socket.AF_INET6, ip)), 16)
+
+
 def ip4range(*args):
     for arg in args:
         r = getranges(arg)
@@ -698,6 +701,12 @@ def ip4range(*args):
         while curip <= endip:
             yield(numToDottedQuad(curip))
             curip += 1
+
+
+def ip6range(*args):
+    for arg in args:
+        if check_ipv6(arg):
+            yield(arg)
 
 
 def getranges(ipstring):
@@ -726,7 +735,7 @@ def getranges(ipstring):
             naddr1 = dottedQuadToNum(socket.gethostbyname(ipstring))
             naddr2 = naddr1
         except socket.error:
-            log.info('Could not resolve %s' % ipstring)
+            log.error('Could not resolve %s' % ipstring)
             return
     return((naddr1, naddr2))
 
@@ -786,6 +795,8 @@ def resumeFromIP(ip, args):
     rargs = list()
     nip = dottedQuadToNum(ip)
     for arg in args:
+        if arg is None:
+            continue
         startip, endip = getranges(arg)
         if not foundit:
             if startip <= nip and endip >= nip:
@@ -900,11 +911,11 @@ def createReverseLookup(src, dst):
     if len(srcdb) > 100:
         log.warn("Performing dns lookup on %s hosts. To disable reverse ip resolution make use of the -n option" % len(srcdb))
     for k in srcdb.keys():
-        tmp = k.split(':', 1)
+        tmp = k.split(b':', 1)
         if len(tmp) == 2:
             ajpi, port = tmp
             try:
-                tmpk = ':'.join([socket.gethostbyaddr(ajpi)[0], port])
+                tmpk = ':'.join([socket.gethostbyaddr(ajpi.decode())[0], port.decode()])
                 logging.debug('Resolved %s to %s' % (k, tmpk))
                 dstdb[k] = tmpk
             except socket.error:
@@ -918,10 +929,10 @@ def createReverseLookup(src, dst):
 def getasciitable(labels, db, resdb=None, width=60):
     rows = list()
     for k in db.keys():
-        cols = [k, db[k]]
+        cols = [k.decode(), db[k].decode()]
         if resdb is not None:
             if k in resdb:
-                cols.append(resdb[k])
+                cols.append(resdb[k].decode())
             else:
                 cols.append('[not available]')
         rows.append(cols)
@@ -1143,6 +1154,10 @@ def getAuthHeader(pkt):
 
 
 def check_ipv6(n):
+    log = logging.getLogger('check_ipv6')
+    if '/' in n:
+        log.error('CIDR notation not supported for IPv6 addresses.')
+        return False
     try:
         socket.inet_pton(socket.AF_INET6, n)
         return True

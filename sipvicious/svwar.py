@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # svwar.py - SIPvicious extension line scanner
 
 __GPL__ = """
@@ -83,7 +82,12 @@ class TakeASip:
         self.xlist = list()
         self.challenges = list()
         self.realm = None
-        self.dsthost, self.dstport = host, int(port)
+        try:
+            if int(port) > 1 and int(port) <= 65535:
+                self.dsthost, self.dstport = host, int(port)
+        except (ValueError, TypeError):
+            self.log.error('port should strictly be an integer between 1 and 65535')
+            exit(1)
         self.domain = self.dsthost
         if domain:
             self.domain = domain
@@ -363,7 +367,7 @@ class TakeASip:
                 except socket.error as err:
                     self.log.error("socket error: %s" % err)
                     return
-                buff = buff.decode('utf-8')
+                buff = buff.decode('utf-8', 'ignore')
                 if buff.startswith(self.TRYING) \
                         or buff.startswith(self.RINGING) \
                         or buff.startswith(self.UNAVAILABLE):
@@ -443,12 +447,12 @@ class TakeASip:
                             try:
                                 if self.guessmode == 1:
                                     pickle.dump(self.nextuser, open(os.path.join(
-                                        exportpath, 'lastextension.pkl'), 'w'))
+                                        exportpath, 'lastextension.pkl'), 'wb+'))
                                     self.log.debug(
                                         'logged last extension %s' % self.nextuser)
                                 elif self.guessmode == 2:
                                     pickle.dump(self.guessargs.tell(), open(
-                                        os.path.join(exportpath, 'lastextension.pkl'), 'w'))
+                                        os.path.join(exportpath, 'lastextension.pkl'), 'wb+'))
                                     self.log.debug(
                                         'logged last position %s' % self.guessargs.tell())
                             except IOError:
@@ -466,6 +470,8 @@ def main():
     usage += "%prog -d dictionary.txt 10.0.0.2\r\n"
     parser = OptionParser(usage, version="%prog v" +
                           str(__version__) + __GPL__)
+    parser.add_option("-p", "--port", dest="port", default="5060",
+                      help="Destination port of the SIP device - eg -p 5060", metavar="PORT")
     parser = standardoptions(parser)
     parser = standardscanneroptions(parser)
     parser.add_option("-d", "--dictionary", dest="dictionary", type="string",
@@ -534,7 +540,7 @@ def main():
         optionssrc = os.path.join(exportpath, 'options.pkl')
         previousresume = options.resume
         previousverbose = options.verbose
-        options, args = pickle.load(open(optionssrc, 'r'))
+        options, args = pickle.load(open(optionssrc, 'rb'), encoding='bytes')
         options.resume = previousresume
         options.verbose = previousverbose
     elif options.save is not None:
@@ -547,13 +553,13 @@ def main():
     if options.dictionary is not None:
         guessmode = 2
         try:
-            dictionary = open(options.dictionary, 'r')
+            dictionary = open(options.dictionary, 'r', encoding='utf-8', errors='ignore')
         except IOError:
             logging.error("could not open %s" % options.dictionary)
             exit(1)
         if options.resume is not None:
             lastextensionsrc = os.path.join(exportpath, 'lastextension.pkl')
-            previousposition = pickle.load(open(lastextensionsrc, 'r'))
+            previousposition = pickle.load(open(lastextensionsrc, 'rb'), encoding='bytes')
             dictionary.seek(previousposition)
         guessargs = dictionary
     else:
@@ -561,7 +567,7 @@ def main():
         if options.resume is not None:
             lastextensionsrc = os.path.join(exportpath, 'lastextension.pkl')
             try:
-                previousextension = pickle.load(open(lastextensionsrc, 'r'))
+                previousextension = pickle.load(open(lastextensionsrc, 'rb'), encoding='bytes')
             except IOError:
                 logging.critical('Could not read from %s' % lastextensionsrc)
                 exit(1)
@@ -589,7 +595,7 @@ def main():
                 exit(1)
             optionsdst = os.path.join(exportpath, 'options.pkl')
             logging.debug('saving options to %s' % optionsdst)
-            pickle.dump([options, args], open(optionsdst, 'w'))
+            pickle.dump([options, args], open(optionsdst, 'wb+'))
     if options.autogetip:
         tmpsocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         tmpsocket.connect(("msn.com", 80))
@@ -641,11 +647,11 @@ def main():
         try:
             if guessmode == 1:
                 pickle.dump(sipvicious.nextuser, open(
-                    os.path.join(exportpath, 'lastextension.pkl'), 'w'))
+                    os.path.join(exportpath, 'lastextension.pkl'), 'wb'))
                 logging.debug('logged last extension %s' % sipvicious.nextuser)
             elif guessmode == 2:
                 pickle.dump(sipvicious.guessargs.tell(), open(
-                    os.path.join(exportpath, 'lastextension.pkl'), 'w'))
+                    os.path.join(exportpath, 'lastextension.pkl'), 'wb'))
                 logging.debug('logged last position %s' %
                               sipvicious.guessargs.tell())
         except IOError:
@@ -658,8 +664,12 @@ def main():
             if (lenres < 400 and options.save is not None) or options.save is None:
                 labels = ('Extension', 'Authentication')
                 rows = list()
-                for k in sipvicious.resultauth.keys():
-                    rows.append((k, sipvicious.resultauth[k]))
+                try:
+                    for k in sipvicious.resultauth.keys():
+                        rows.append((k.decode(), sipvicious.resultauth[k].decode()))
+                except AttributeError:
+                    for k in sipvicious.resultauth.keys():
+                        rows.append((k, sipvicious.resultauth[k]))                    
                 print(to_string(rows, header=labels))
             else:
                 logging.warn("too many to print - use svreport for this")

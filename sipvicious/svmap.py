@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # svmap.py - SIPvicious SIP scanner
 
 __GPL__ = """
@@ -36,19 +35,23 @@ from sys import exit
 from .libs.pptable import to_string
 from .libs.svhelper import (
     __version__, calcloglevel, createTag, fingerPrintPacket, getranges,  
-    getTag, getTargetFromSRV, ip4range, makeRequest, getRange, scanlist,
-    mysendto, packetcounter, reportBugToAuthor, dbexists, scanfromfile, 
+    getTag, getTargetFromSRV, ip4range, makeRequest, getRange, scanlist, ip6range,
+    mysendto, packetcounter, reportBugToAuthor, dbexists, scanfromfile, check_ipv6,
     scanrandom, standardoptions, standardscanneroptions, resumeFromIP, scanfromdb
 )
 
 __prog__ = "svmap"
 
 class DrinkOrSip:
-    def __init__(self,scaniter,selecttime=0.005,compact=False, bindingip='0.0.0.0',
+    def __init__(self,scaniter,selecttime=0.005,compact=False, bindingip='',
                  fromname='sipvicious',fromaddr='sip:100@1.1.1.1', extension=None,
                  sessionpath=None,socktimeout=3,externalip=None,localport=5060,
-                 printdebug=False,first=None,fpworks=False):
+                 printdebug=False,first=None,fpworks=False,ipv6=False):
         self.log = logging.getLogger('DrinkOrSip')
+        family = socket.AF_INET
+        if ipv6:
+            family = socket.AF_INET6
+        self.ipv6 = ipv6
         self.bindingip = bindingip
         self.sessionpath = sessionpath
         self.dbsyncs = False
@@ -68,7 +71,7 @@ class DrinkOrSip:
             self.resultua = dict()
             self.resultfp = dict()
         # we do UDP
-        self.sock = socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+        self.sock = socket.socket(family, socket.SOCK_DGRAM)
         # socket timeout - this is particularly useful when quitting .. to eat
         # up some final packets
         self.sock.settimeout(socktimeout)
@@ -114,17 +117,17 @@ class DrinkOrSip:
             self.packetcount = packetcounter(50)
         self.sentpackets = 0
 
-    def getResponse(self,buff,srcaddr):        
-        srcip,srcport = srcaddr
+    def getResponse(self,buff,srcaddr):
+        srcip, srcport, *_ = srcaddr
         uaname = 'unknown'
-        buff = buff.decode('utf-8')
+        buff = buff.decode('utf-8', 'ignore')
         if buff.startswith('OPTIONS ') \
             or buff.startswith('INVITE ') \
             or buff.startswith('REGISTER '):
             if self.externalip == srcip:
-                self.log.debug("We received our own packet from %s:%s" % srcaddr)
+                self.log.debug("We received our own packet from %s:%s" % (str(srcip), srcport))
             else:
-                self.log.info("Looks like we received a SIP request from %s:%s"% srcaddr)
+                self.log.info("Looks like we received a SIP request from %s:%s"% (str(srcip), srcport))
                 self.log.debug(buff.__repr__())
             return
         self.log.debug("running fingerPrintPacket()")
@@ -160,9 +163,9 @@ class DrinkOrSip:
             self.resultua['%s:%s' % (srcip,srcport)] = uaname
             self.resultfp['%s:%s' % (srcip,srcport)] = fpname
             if self.sessionpath is not None and self.dbsyncs:
-                    self.resultip.sync()
-                    self.resultua.sync()
-                    self.resultfp.sync()
+                self.resultip.sync()
+                self.resultua.sync()
+                self.resultfp.sync()
         else:
             self.log.info('Packet from %s:%s did not contain a SIP msg'%srcaddr)
             self.log.debug('Packet: %s' % buff.__repr__())
@@ -171,7 +174,11 @@ class DrinkOrSip:
         # bind to 5060 - the reason is to maximize compatability with
         # devices that disregard the source port and send replies back
         # to port 5060
-        self.log.debug("binding to %s:%s" % (self.bindingip,self.localport))
+        if self.bindingip == '':
+            bindingip = 'any'
+        else:
+            bindingip = self.bindingip
+        self.log.debug("binding to %s:%s" % (bindingip, self.localport))
         while 1:
             if self.localport > 65535:
                 self.log.critical("Could not bind to any port")
@@ -196,7 +203,8 @@ class DrinkOrSip:
                 # we got stuff to read off the socket
                 try:
                     buff,srcaddr = self.sock.recvfrom(8192)
-                    self.log.debug('got data from %s:%s' % srcaddr)
+                    host, port, *_ = srcaddr
+                    self.log.debug('got data from %s:%s' % (str(host), str(port)))
                     self.log.debug('data: %s' % buff.__repr__())
                     if self.printdebug:
                         print(srcaddr)
@@ -228,10 +236,19 @@ class DrinkOrSip:
                 dstip,dstport,method = nextscan
                 self.nextip = dstip
                 dsthost = (dstip,dstport)
+                domain = dsthost[0]
                 branchunique = '%s' % random.getrandbits(32)
-
-                localtag = createTag('%s%s' % (''.join(map(lambda x: '%02x' % int(x), dsthost[0].split('.'))),'%04x' % dsthost[1]))
-                fromaddr = '"%s"<%s>' % (self.fromname,self.fromaddr)
+                if self.ipv6 and check_ipv6(dsthost[0]):
+                    domain = '[' + dsthost[0] + ']'
+                    localtag = createTag('%s%s' % (''.join(map(lambda x: 
+                        '%s' % x, dsthost[0].split(':'))), '%04x' % dsthost[1]))
+                else:
+                    localtag = createTag('%s%s' % (''.join(map(lambda x: 
+                        '%02x' % int(x), dsthost[0].split('.'))),'%04x' % dsthost[1]))
+                if self.ipv6:
+                    fromaddr = '"%s"<sip:100@%s>' % (self.fromname, domain)
+                else:
+                    fromaddr = '"%s"<%s>' % (self.fromname, self.fromaddr)
                 toaddr = fromaddr
                 callid = '%s' % random.getrandbits(80)
                 contact = None
@@ -241,7 +258,7 @@ class DrinkOrSip:
                                 method,
                                 fromaddr,
                                 toaddr,
-                                dsthost[0],
+                                domain,
                                 dsthost[1],
                                 callid,
                                 self.externalip,
@@ -262,7 +279,7 @@ class DrinkOrSip:
                     if self.sessionpath is not None:
                         if next(self.packetcount):
                             try:
-                                f=open(os.path.join(self.sessionpath,'lastip.pkl'),'w')
+                                f=open(os.path.join(self.sessionpath,'lastip.pkl'),'wb+')
                                 pickle.dump(self.nextip,f)
                                 f.close()
                                 self.log.debug('logged last ip %s' % self.nextip)
@@ -287,6 +304,8 @@ def main():
     usage += "%prog --resume session1 -v\r\n\r\n"
     usage += "%prog -p5060-5062 10.0.0.3-20 -m INVITE\r\n\r\n"
     parser = OptionParser(usage, version="%prog v"+str(__version__)+__GPL__)
+    parser.add_option("-p", "--port", dest="port", default="5060",
+                      help="Destination port or port ranges of the SIP device - eg -p5060,5061,8000-8100", metavar="PORT")
     parser = standardoptions(parser)
     parser = standardscanneroptions(parser)
     parser.add_option("--randomscan", dest="randomscan", action="store_true",
@@ -296,30 +315,23 @@ def main():
                   help="Scan IPs which were found in a previous scan. Pass the session name as the argument", metavar="scan1")
     parser.add_option("-I", "--inputtext", dest="inputtext",
                   help="Scan IPs from a text file - use the same syntax as command line but with new lines instead of commas. Pass the file name as the argument", metavar="scan1")
-    parser.add_option("-m", "--method", dest="method",
-                  help="Specify the request method - by default this is OPTIONS.",
-                  default='OPTIONS'
-                  )
+    parser.add_option("-m", "--method", dest="method",  help="Specify the request method - by default this is OPTIONS.",
+                  default='OPTIONS')
     parser.add_option("-d", "--debug", dest="printdebug",
-                  help="Print SIP messages received",
-                  default=False, action="store_true"
-                  )
+                  help="Print SIP messages received", default=False, action="store_true")
     parser.add_option("--first", dest="first",
                   help="Only send the first given number of messages (i.e. usually used to scan only X IPs)",
-                  type="long",
-                  )
+                  type="long")
     parser.add_option("-e", "--extension", dest="extension", default='100',
                   help="Specify an extension - by default this is not set")
-    parser.add_option("--randomize", dest="randomize", action="store_true",
-                      default=False,
+    parser.add_option("--randomize", dest="randomize", action="store_true", default=False,
                   help="Randomize scanning instead of scanning consecutive ip addresses")
-    parser.add_option("--srv", dest="srvscan", action="store_true",
-                      default=False,
+    parser.add_option("--srv", dest="srvscan", action="store_true", default=False,
                   help="Scan the SRV records for SIP on the destination domain name." \
                        "The targets have to be domain names - example.org domain1.com")
     parser.add_option('--fromname',dest="fromname", default="sipvicious",
                       help="specify a name for the from header")
-    parser.add_option('--crashandburn', dest="crashandburn", action="store_true", default=False)
+    parser.add_option('-6', '--ipv6', dest="ipv6", action='store_true', help="scan an IPv6 address")
     (options, args) = parser.parse_args()
     exportpath = None
     if options.resume is not None:
@@ -333,7 +345,7 @@ def main():
         optionssrc = os.path.join(exportpath,'options.pkl')
         previousresume = options.resume
         previousverbose = options.verbose
-        options,args = pickle.load(open(optionssrc,'r'))
+        options,args = pickle.load(open(optionssrc,'rb'), encoding='bytes')
         options.resume = previousresume
         options.verbose = previousverbose
     elif options.save is not None:
@@ -424,8 +436,8 @@ def main():
             if options.resume is not None:
                 lastipsrc = os.path.join(exportpath,'lastip.pkl')
                 try:
-                    f=open(lastipsrc,'r')
-                    previousip = pickle.load(f)
+                    f=open(lastipsrc,'rb')
+                    previousip = pickle.load(f, encoding='bytes')
                     f.close()
                 except IOError:
                     logging.critical('Could not read from %s' % lastipsrc)
@@ -434,14 +446,16 @@ def main():
                 args = resumeFromIP(previousip,args)
                 logging.debug('New args: %s' % args)
                 logging.info('Resuming from %s' % previousip)
-
-            # normal consecutive scan
-            try:
-                iprange = ip4range(*args)
-            except ValueError as err:
-                logging.error(err)
-                exit(1)
-            scaniter = scanlist(iprange,portrange,options.method.split(','))
+            if options.ipv6:
+                scaniter = scanlist(ip6range(*args), portrange, options.method.split(','))
+            else:
+                # normal consecutive scan
+                try:
+                    iprange = ip4range(*args)
+                except ValueError as err:
+                    logging.error(err)
+                    exit(1)
+                scaniter = scanlist(iprange,portrange,options.method.split(','))
     if options.save is not None:
         if options.resume is None:
             exportpath = os.path.join(os.path.expanduser('~'),'.sipvicious',__prog__,options.save)
@@ -456,7 +470,7 @@ def main():
                 exit(1)
             optionsdst = os.path.join(exportpath,'options.pkl')
             logging.debug('saving options to %s' % optionsdst)
-            pickle.dump([options,args],open(optionsdst,'w'))
+            pickle.dump([options,args],open(optionsdst,'wb+'))
     try:
         options.extension
     except AttributeError:
@@ -478,12 +492,11 @@ def main():
                     printdebug=options.printdebug,
                     first=options.first,
                     fromname=options.fromname,
+                    ipv6=options.ipv6,
                     )
     start_time = datetime.now()
     logging.info( "start your engines" )
     try:
-        if options.crashandburn:
-            raise ValueError
         try:
             sipvicious.start()
         except AssertionError as err:
@@ -506,7 +519,7 @@ def main():
         lastipdst = os.path.join(exportpath,'lastip.pkl')
         logging.debug('saving state to %s' % lastipdst)
         try:
-            f = open(lastipdst,'w')
+            f = open(lastipdst,'wb+')
             pickle.dump(sipvicious.nextip,f)
             f.close()
         except OSError:
@@ -529,8 +542,12 @@ def main():
                 width = 60
                 labels = ('SIP Device','User Agent','Fingerprint')
                 rows = list()
-                for k in sipvicious.resultua.keys():
-                    rows.append((k,sipvicious.resultua[k],sipvicious.resultfp[k]))
+                try:
+                    for k in sipvicious.resultua.keys():
+                        rows.append((k.decode(),sipvicious.resultua[k].decode(),sipvicious.resultfp[k].decode()))
+                except AttributeError:
+                    for k in sipvicious.resultua.keys():
+                        rows.append((k,sipvicious.resultua[k],sipvicious.resultfp[k]))  
                 print(to_string(rows, header=labels))
             else:
                 logging.warn("too many to print - use svreport for this")

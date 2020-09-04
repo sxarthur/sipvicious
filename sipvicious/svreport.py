@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # SIPVicious report engine
 __GPL__ = """
 
@@ -145,7 +144,6 @@ def main():
                 if options.format is None:
                     options.format = 'txt'
                 options.outputfile += '.%s' % options.format
-
         if options.format in [None, 'stdout', 'txt']:
             o = getasciitable(labels, db, resdb)
             if options.outputfile is None:
@@ -197,18 +195,18 @@ def main():
             if v not in useragents:
                 useragents[v] = 0
             useragents[v] += 1
-            useragentconame = re.split('[ /]', v)[0]
+            useragentconame = re.split(b'[ /]', v)[0]
             if useragentconame not in useragentconames:
                 useragentconames[useragentconame] = 0
             useragentconames[useragentconame] += 1
 
         _useragents = sorted(iter(useragents.items()),
                              key=itemgetter(1), reverse=True)
-        suseragents = list(map(lambda x: '\t- %s (%s)' % (x[0], x[1]), _useragents))
+        suseragents = list(map(lambda x: '\t- %s (%s)' % (x[0].decode(), x[1]), _useragents))
         _useragentsnames = sorted(
             iter(useragentconames.items()), key=itemgetter(1), reverse=True)
         suseragentsnames = list(map(lambda x: '\t- %s (%s)' %
-                               (x[0], x[1]), _useragentsnames))
+                               (x[0].decode(), x[1]), _useragentsnames))
         print("Total number of SIP devices found: %s" % len(list(db.keys())))
         print("Total number of useragents: %s\r\n" % len(suseragents))
         print("Total number of useragent names: %s\r\n" % len(suseragentsnames))
@@ -245,9 +243,9 @@ def main():
         useragentconames = dict()
         labels = ['Host', 'User Agent']
         for k in db.keys():
-            v = db[k]
+            v = db[k].decode()
             if searchstring.lower() in v.lower():
-                print(k + '\t' + v)
+                print(k.decode() + '\t' + v)
 
 if __name__ == "__main__":
     main()
